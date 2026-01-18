@@ -2,7 +2,9 @@
 
 from enum import IntEnum
 from dataclasses import dataclass
+import jax
 import jax.numpy as jnp
+from functools import partial
 
 
 class FormationTypes(IntEnum):
@@ -78,6 +80,132 @@ FORMATION_SPECS: dict[FormationTypes, FormationSpec] = {
         description="Maximum density defensive formation"
     ),
 }
+
+
+def rotate_formation(
+    target: jnp.ndarray,
+    angle: float,
+    order: int = 1
+) -> jnp.ndarray:
+    """Rotate a formation target by the given angle.
+
+    Uses bilinear interpolation for smooth rotation.
+
+    Args:
+        target: Formation target of shape (H, W, C)
+        angle: Rotation angle in radians (counterclockwise)
+        order: Interpolation order (1 for bilinear)
+
+    Returns:
+        Rotated formation target
+    """
+    h, w, c = target.shape
+    center_y, center_x = h / 2, w / 2
+
+    # Create coordinate grids for output
+    y_out, x_out = jnp.meshgrid(
+        jnp.arange(h, dtype=jnp.float32),
+        jnp.arange(w, dtype=jnp.float32),
+        indexing='ij'
+    )
+
+    # Translate to center
+    y_centered = y_out - center_y
+    x_centered = x_out - center_x
+
+    # Apply inverse rotation (to find source coordinates)
+    cos_a = jnp.cos(angle)
+    sin_a = jnp.sin(angle)
+    y_src = cos_a * y_centered + sin_a * x_centered + center_y
+    x_src = -sin_a * y_centered + cos_a * x_centered + center_x
+
+    # Bilinear interpolation
+    y0 = jnp.floor(y_src).astype(jnp.int32)
+    x0 = jnp.floor(x_src).astype(jnp.int32)
+    y1 = y0 + 1
+    x1 = x0 + 1
+
+    # Clamp to valid range
+    y0_c = jnp.clip(y0, 0, h - 1)
+    y1_c = jnp.clip(y1, 0, h - 1)
+    x0_c = jnp.clip(x0, 0, w - 1)
+    x1_c = jnp.clip(x1, 0, w - 1)
+
+    # Interpolation weights
+    wy = y_src - y0.astype(jnp.float32)
+    wx = x_src - x0.astype(jnp.float32)
+
+    # Out of bounds mask (set to zero)
+    in_bounds = (
+        (y_src >= 0) & (y_src < h - 1) &
+        (x_src >= 0) & (x_src < w - 1)
+    )
+
+    # Gather values at corners and interpolate
+    def interpolate_channel(channel_data):
+        v00 = channel_data[y0_c, x0_c]
+        v01 = channel_data[y0_c, x1_c]
+        v10 = channel_data[y1_c, x0_c]
+        v11 = channel_data[y1_c, x1_c]
+
+        # Bilinear interpolation
+        v0 = v00 * (1 - wx) + v01 * wx
+        v1 = v10 * (1 - wx) + v11 * wx
+        v = v0 * (1 - wy) + v1 * wy
+
+        # Zero outside bounds
+        return jnp.where(in_bounds, v, 0.0)
+
+    # Apply to all channels
+    rotated = jnp.stack([
+        interpolate_channel(target[..., i])
+        for i in range(c)
+    ], axis=-1)
+
+    return rotated
+
+
+def create_rotated_variants(
+    target: jnp.ndarray,
+    num_rotations: int = 8
+) -> list[jnp.ndarray]:
+    """Create rotated variants of a formation target.
+
+    Args:
+        target: Base formation target
+        num_rotations: Number of rotation variants (evenly spaced)
+
+    Returns:
+        List of rotated formation targets
+    """
+    angles = jnp.linspace(0, 2 * jnp.pi, num_rotations, endpoint=False)
+    return [rotate_formation(target, float(angle)) for angle in angles]
+
+
+@partial(jax.jit, static_argnums=(1, 2))
+def random_rotate_formation(
+    target: jnp.ndarray,
+    key: jax.random.PRNGKey,
+    continuous: bool = True
+) -> jnp.ndarray:
+    """Randomly rotate a formation target.
+
+    Args:
+        target: Formation target
+        key: PRNG key
+        continuous: If True, use continuous angles; if False, use 90° increments
+
+    Returns:
+        Randomly rotated formation target
+    """
+    if continuous:
+        angle = jax.random.uniform(key, (), minval=0, maxval=2 * jnp.pi)
+    else:
+        # 90 degree increments
+        idx = jax.random.randint(key, (), 0, 4)
+        angle = idx * (jnp.pi / 2)
+
+    return rotate_formation(target, angle)
 
 
 class FormationTargets:
@@ -251,7 +379,8 @@ class FormationTargets:
 def create_formation_target(
     height: int,
     width: int,
-    formation_type: FormationTypes | int | str
+    formation_type: FormationTypes | int | str,
+    rotation: float = 0.0
 ) -> jnp.ndarray:
     """Create formation target pattern.
 
@@ -259,6 +388,7 @@ def create_formation_target(
         height: Grid height
         width: Grid width
         formation_type: Formation type (enum, int, or string name)
+        rotation: Rotation angle in radians (default 0)
 
     Returns:
         RGBA target tensor
@@ -272,19 +402,25 @@ def create_formation_target(
     targets = FormationTargets()
 
     if formation_type == FormationTypes.LINE:
-        return targets.line(height, width)
+        target = targets.line(height, width)
     elif formation_type == FormationTypes.PHALANX:
-        return targets.phalanx(height, width)
+        target = targets.phalanx(height, width)
     elif formation_type == FormationTypes.SQUARE:
-        return targets.square(height, width)
+        target = targets.square(height, width)
     elif formation_type == FormationTypes.WEDGE:
-        return targets.wedge(height, width)
+        target = targets.wedge(height, width)
     elif formation_type == FormationTypes.COLUMN:
-        return targets.column(height, width)
+        target = targets.column(height, width)
     elif formation_type == FormationTypes.TESTUDO:
-        return targets.testudo(height, width)
+        target = targets.testudo(height, width)
     else:
         raise ValueError(f"Unknown formation type: {formation_type}")
+
+    # Apply rotation if specified
+    if rotation != 0.0:
+        target = rotate_formation(target, rotation)
+
+    return target
 
 
 def create_all_formation_targets(
