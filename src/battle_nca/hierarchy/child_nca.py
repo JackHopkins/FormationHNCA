@@ -342,6 +342,14 @@ class ChildNCA(nn.Module):
         state = state.at[..., CHILD_CHANNELS.FATIGUE].set(
             jnp.clip(state[..., CHILD_CHANNELS.FATIGUE], 0.0, 1.0)
         )
+        # Velocity: [-1, 1]
+        state = state.at[..., CHILD_CHANNELS.VELOCITY_X:CHILD_CHANNELS.VELOCITY_Y+1].set(
+            jnp.clip(state[..., CHILD_CHANNELS.VELOCITY_X:CHILD_CHANNELS.VELOCITY_Y+1], -1.0, 1.0)
+        )
+        # Hidden channels: [-2, 2] (allow some range but prevent explosion)
+        state = state.at[..., CHILD_CHANNELS.HIDDEN_START:CHILD_CHANNELS.HIDDEN_END].set(
+            jnp.clip(state[..., CHILD_CHANNELS.HIDDEN_START:CHILD_CHANNELS.HIDDEN_END], -2.0, 2.0)
+        )
 
         return state
 

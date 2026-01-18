@@ -21,8 +21,11 @@ def normalize_gradients(grads: PyTree) -> PyTree:
         Normalized gradients
     """
     def norm_grad(g: jnp.ndarray) -> jnp.ndarray:
+        # Replace NaN/inf with zeros
+        g = jnp.where(jnp.isfinite(g), g, 0.0)
         norm = jnp.linalg.norm(g)
-        return g / (norm + 1e-8)
+        # Only normalize if norm is reasonable
+        return jnp.where(norm > 1e-8, g / norm, g * 0.0)
 
     return jax.tree.map(norm_grad, grads)
 
