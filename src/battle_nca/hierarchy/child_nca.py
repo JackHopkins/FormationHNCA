@@ -320,38 +320,41 @@ class ChildNCA(nn.Module):
     def _clamp_channels(self, state: jnp.ndarray) -> jnp.ndarray:
         """Clamp channel values to valid ranges.
 
+        OPTIMIZED: Single vectorized operation instead of multiple .at[].set() calls.
+
         Args:
             state: Current state
 
         Returns:
             State with clamped channels
         """
-        # RGB and alpha: [0, 1]
-        state = state.at[..., :4].set(
-            jnp.clip(state[..., :4], 0.0, 1.0)
-        )
-        # Health: [0, 1]
-        state = state.at[..., CHILD_CHANNELS.HEALTH].set(
-            jnp.clip(state[..., CHILD_CHANNELS.HEALTH], 0.0, 1.0)
-        )
-        # Morale: [-1, 1]
-        state = state.at[..., CHILD_CHANNELS.MORALE].set(
-            jnp.clip(state[..., CHILD_CHANNELS.MORALE], -1.0, 1.0)
-        )
-        # Fatigue: [0, 1]
-        state = state.at[..., CHILD_CHANNELS.FATIGUE].set(
-            jnp.clip(state[..., CHILD_CHANNELS.FATIGUE], 0.0, 1.0)
-        )
-        # Velocity: [-1, 1]
-        state = state.at[..., CHILD_CHANNELS.VELOCITY_X:CHILD_CHANNELS.VELOCITY_Y+1].set(
-            jnp.clip(state[..., CHILD_CHANNELS.VELOCITY_X:CHILD_CHANNELS.VELOCITY_Y+1], -1.0, 1.0)
-        )
-        # Hidden channels: [-2, 2] (allow some range but prevent explosion)
-        state = state.at[..., CHILD_CHANNELS.HIDDEN_START:CHILD_CHANNELS.HIDDEN_END].set(
-            jnp.clip(state[..., CHILD_CHANNELS.HIDDEN_START:CHILD_CHANNELS.HIDDEN_END], -2.0, 2.0)
-        )
+        # Build min/max arrays for all 24 channels (vectorized clamp)
+        # Channel layout: RGB(0-2), Alpha(3), Health(4), Morale(5), Fatigue(6),
+        #                 Vel(7-8), Type(9), FormID(10), Parent(11-12), Enemy(13-14), Hidden(15-23)
+        mins = jnp.array([
+            0.0, 0.0, 0.0, 0.0,  # RGB, Alpha: [0, 1]
+            0.0,                  # Health: [0, 1]
+            -1.0,                 # Morale: [-1, 1]
+            0.0,                  # Fatigue: [0, 1]
+            -1.0, -1.0,          # Velocity: [-1, 1]
+            -jnp.inf, -jnp.inf,  # Type, FormID: no clamp
+            -jnp.inf, -jnp.inf,  # Parent signal: no clamp
+            -jnp.inf, -jnp.inf,  # Enemy info: no clamp
+            -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0  # Hidden: [-2, 2]
+        ])
+        maxs = jnp.array([
+            1.0, 1.0, 1.0, 1.0,  # RGB, Alpha
+            1.0,                  # Health
+            1.0,                  # Morale
+            1.0,                  # Fatigue
+            1.0, 1.0,            # Velocity
+            jnp.inf, jnp.inf,    # Type, FormID
+            jnp.inf, jnp.inf,    # Parent signal
+            jnp.inf, jnp.inf,    # Enemy info
+            2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0  # Hidden
+        ])
 
-        return state
+        return jnp.clip(state, mins, maxs)
 
     def multi_step(
         self,

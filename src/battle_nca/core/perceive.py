@@ -139,6 +139,19 @@ class DepthwiseConvPerceive(nn.Module):
         return jnp.concatenate([grad_x, grad_y], axis=-1)
 
 
+def _create_gaussian_kernel(size: int, sigma: float) -> jnp.ndarray:
+    """Create a Gaussian kernel for smoothing (module-level for caching)."""
+    x = jnp.arange(size) - size // 2
+    xx, yy = jnp.meshgrid(x, x)
+    kernel = jnp.exp(-(xx**2 + yy**2) / (2 * sigma**2))
+    return kernel / kernel.sum()
+
+
+# Pre-compute Gaussian kernels at module load time (they never change)
+_MORALE_KERNEL = _create_gaussian_kernel(7, 2.0)
+_FORMATION_KERNEL = _create_gaussian_kernel(11, 4.0)
+
+
 class MultiScalePerceive(nn.Module):
     """Perception at multiple spatial scales for different mechanics.
 
@@ -147,19 +160,14 @@ class MultiScalePerceive(nn.Module):
     - 7x7 for morale contagion
     - 11x11 for formation cohesion
 
+    OPTIMIZED: Gaussian kernels are pre-computed at module load time.
+
     Attributes:
         num_channels: Number of input channels
         use_circular_padding: Whether to use circular padding
     """
     num_channels: int
     use_circular_padding: bool = True
-
-    def _create_gaussian_kernel(self, size: int, sigma: float) -> jnp.ndarray:
-        """Create a Gaussian kernel for smoothing."""
-        x = jnp.arange(size) - size // 2
-        xx, yy = jnp.meshgrid(x, x)
-        kernel = jnp.exp(-(xx**2 + yy**2) / (2 * sigma**2))
-        return kernel / kernel.sum()
 
     @nn.compact
     def __call__(self, state: jnp.ndarray) -> dict[str, jnp.ndarray]:
@@ -178,16 +186,14 @@ class MultiScalePerceive(nn.Module):
         # Standard Sobel perception for melee (3x3)
         melee_perception = perceive(state, self.use_circular_padding)
 
-        # Morale perception (7x7 Gaussian smoothing)
-        morale_kernel = self._create_gaussian_kernel(7, 2.0)
+        # Morale perception (7x7 Gaussian smoothing) - use pre-computed kernel
         morale_smooth = depthwise_conv(
-            state, morale_kernel, self.num_channels, self.use_circular_padding
+            state, _MORALE_KERNEL, self.num_channels, self.use_circular_padding
         )
 
-        # Formation perception (11x11 Gaussian smoothing)
-        formation_kernel = self._create_gaussian_kernel(11, 4.0)
+        # Formation perception (11x11 Gaussian smoothing) - use pre-computed kernel
         formation_smooth = depthwise_conv(
-            state, formation_kernel, self.num_channels, self.use_circular_padding
+            state, _FORMATION_KERNEL, self.num_channels, self.use_circular_padding
         )
 
         if not has_batch:
