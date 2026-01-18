@@ -55,8 +55,10 @@ def depthwise_conv(
     else:
         padding = 'SAME'
 
+    # For depthwise conv with feature_group_count=channels:
+    # kernel shape should be (H, W, 1, channels) in HWIO format
     kernel_expanded = kernel[:, :, None, None]
-    kernel_tiled = jnp.tile(kernel_expanded, (1, 1, channels, 1))
+    kernel_tiled = jnp.tile(kernel_expanded, (1, 1, 1, channels))
 
     result = jax.lax.conv_general_dilated(
         inputs,
