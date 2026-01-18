@@ -49,8 +49,11 @@ def depthwise_conv(
     if not has_batch:
         inputs = inputs[None]
 
+    kernel_size = kernel.shape[0]
+    pad_size = kernel_size // 2
+
     if use_circular_padding:
-        inputs = circular_pad(inputs, pad=1)
+        inputs = circular_pad(inputs, pad=pad_size)
         padding = 'VALID'
     else:
         padding = 'SAME'
@@ -177,27 +180,15 @@ class MultiScalePerceive(nn.Module):
 
         # Morale perception (7x7 Gaussian smoothing)
         morale_kernel = self._create_gaussian_kernel(7, 2.0)
-        if self.use_circular_padding:
-            padded = circular_pad(state, pad=3)
-            morale_smooth = depthwise_conv(
-                padded, morale_kernel, self.num_channels, use_circular_padding=False
-            )
-        else:
-            morale_smooth = depthwise_conv(
-                state, morale_kernel, self.num_channels, use_circular_padding=False
-            )
+        morale_smooth = depthwise_conv(
+            state, morale_kernel, self.num_channels, self.use_circular_padding
+        )
 
         # Formation perception (11x11 Gaussian smoothing)
         formation_kernel = self._create_gaussian_kernel(11, 4.0)
-        if self.use_circular_padding:
-            padded = circular_pad(state, pad=5)
-            formation_smooth = depthwise_conv(
-                padded, formation_kernel, self.num_channels, use_circular_padding=False
-            )
-        else:
-            formation_smooth = depthwise_conv(
-                state, formation_kernel, self.num_channels, use_circular_padding=False
-            )
+        formation_smooth = depthwise_conv(
+            state, formation_kernel, self.num_channels, self.use_circular_padding
+        )
 
         if not has_batch:
             melee_perception = melee_perception[0]
