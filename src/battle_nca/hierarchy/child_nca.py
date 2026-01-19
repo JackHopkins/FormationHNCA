@@ -215,11 +215,13 @@ class ChildNCA(nn.Module):
         hidden_dim: Hidden layer dimension
         fire_rate: Stochastic update probability
         use_circular_padding: Whether to use circular padding
+        use_alive_masking: Whether to zero out dead cells (disable for Phase 2)
     """
     num_channels: int = 24
     hidden_dim: int = 128
     fire_rate: float = 0.5
     use_circular_padding: bool = True
+    use_alive_masking: bool = True
 
     def setup(self):
         self.multi_perceive = MultiScalePerceive(
@@ -267,8 +269,9 @@ class ChildNCA(nn.Module):
         # Stochastic update
         state = stochastic_update(state, ds, key, self.fire_rate)
 
-        # Alive masking
-        state = alive_masking(state, CHILD_CHANNELS.ALPHA, threshold=0.1)
+        # Alive masking (can be disabled for Phase 2 transitions)
+        if self.use_alive_masking:
+            state = alive_masking(state, CHILD_CHANNELS.ALPHA, threshold=0.1)
 
         # Clamp specific channels to valid ranges
         state = self._clamp_channels(state)
