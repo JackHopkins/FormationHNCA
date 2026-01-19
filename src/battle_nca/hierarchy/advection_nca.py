@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from battle_nca.core.perceive import MultiScalePerceive
 from battle_nca.core.nca import stochastic_update
-from battle_nca.core.advection import advect_mass
+from battle_nca.core.advection import advect_mass, diffuse_mass, add_velocity_noise
 
 
 @dataclass
@@ -136,6 +136,7 @@ class AdvectionNCA(nn.Module):
     1. Perceives local neighborhood
     2. Computes velocity updates (where should mass go?)
     3. Applies advection to transport mass according to velocity
+    4. Applies diffusion for exploration
 
     This ensures mass conservation and makes movement explicit.
 
@@ -145,12 +146,16 @@ class AdvectionNCA(nn.Module):
         fire_rate: Stochastic update probability
         advection_dt: Time step for advection (smaller = more stable)
         advection_steps: Number of advection sub-steps per NCA step
+        diffusion_rate: Rate of mass diffusion for exploration (0 = none)
+        velocity_noise: Scale of random noise added to velocity (0 = none)
     """
     num_channels: int = 16
     hidden_dim: int = 64
     fire_rate: float = 0.5
     advection_dt: float = 0.25
     advection_steps: int = 2  # Multiple small steps for stability
+    diffusion_rate: float = 0.05  # Spread mass for exploration
+    velocity_noise: float = 0.2   # Random velocity perturbation
 
     def setup(self):
         self.perceive = MultiScalePerceive(
@@ -204,9 +209,18 @@ class AdvectionNCA(nn.Module):
         vx = state[..., ADVECTION_CHANNELS.VELOCITY_X]
         vy = state[..., ADVECTION_CHANNELS.VELOCITY_Y]
 
+        # Add velocity noise for exploration
+        if self.velocity_noise > 0:
+            key, noise_key = jax.random.split(key)
+            vx, vy = add_velocity_noise(vx, vy, noise_key, self.velocity_noise)
+
         # Multiple small advection steps for stability
         for _ in range(self.advection_steps):
             mass = advect_mass(mass, vx, vy, self.advection_dt)
+
+        # Apply diffusion for exploration (mass spreads to neighbors)
+        if self.diffusion_rate > 0:
+            mass = diffuse_mass(mass, self.diffusion_rate)
 
         state = state.at[..., ADVECTION_CHANNELS.MASS].set(mass)
 

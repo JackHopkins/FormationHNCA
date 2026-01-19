@@ -71,6 +71,107 @@ def advect_mass(
     return jnp.clip(new_mass, 0.0, 1.0)
 
 
+def diffuse_mass(
+    mass: jnp.ndarray,
+    diffusion_rate: float = 0.1
+) -> jnp.ndarray:
+    """Apply diffusion to mass field (spreads mass to neighbors).
+
+    This allows mass to explore the space even without directed velocity.
+    Conserves total mass.
+
+    Args:
+        mass: Density field of shape (H, W) or (B, H, W)
+        diffusion_rate: How much mass spreads per step (0-0.25 for stability)
+
+    Returns:
+        Diffused mass field with same total mass
+    """
+    # Clamp diffusion rate for stability
+    rate = jnp.clip(diffusion_rate, 0.0, 0.25)
+
+    # Compute neighbor average
+    padded = jnp.pad(mass, ((1, 1), (1, 1)) if mass.ndim == 2 else ((0, 0), (1, 1), (1, 1)), mode='wrap')
+
+    if mass.ndim == 2:
+        neighbor_sum = (
+            padded[:-2, 1:-1] + padded[2:, 1:-1] +  # up, down
+            padded[1:-1, :-2] + padded[1:-1, 2:]     # left, right
+        )
+    else:  # Batched
+        neighbor_sum = (
+            padded[:, :-2, 1:-1] + padded[:, 2:, 1:-1] +
+            padded[:, 1:-1, :-2] + padded[:, 1:-1, 2:]
+        )
+
+    # Diffusion: give some mass to neighbors, receive from neighbors
+    # Each cell gives rate * mass to each of 4 neighbors
+    # Each cell receives rate * neighbor_mass from each neighbor
+    outflow = 4 * rate * mass
+    inflow = rate * neighbor_sum
+
+    new_mass = mass - outflow + inflow
+    return jnp.clip(new_mass, 0.0, 1.0)
+
+
+def advect_with_diffusion(
+    mass: jnp.ndarray,
+    velocity_x: jnp.ndarray,
+    velocity_y: jnp.ndarray,
+    dt: float = 0.5,
+    diffusion_rate: float = 0.05
+) -> jnp.ndarray:
+    """Advect mass with added diffusion for exploration.
+
+    Combines directed transport (advection) with random spreading (diffusion).
+
+    Args:
+        mass: Density field
+        velocity_x: Horizontal velocity
+        velocity_y: Vertical velocity
+        dt: Advection time step
+        diffusion_rate: Diffusion strength
+
+    Returns:
+        Updated mass field
+    """
+    # First advect
+    mass = advect_mass(mass, velocity_x, velocity_y, dt)
+
+    # Then diffuse
+    mass = diffuse_mass(mass, diffusion_rate)
+
+    return mass
+
+
+def add_velocity_noise(
+    velocity_x: jnp.ndarray,
+    velocity_y: jnp.ndarray,
+    key: jax.random.PRNGKey,
+    noise_scale: float = 0.3
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Add random noise to velocity field for exploration.
+
+    Args:
+        velocity_x: Horizontal velocity
+        velocity_y: Vertical velocity
+        key: Random key
+        noise_scale: Standard deviation of noise
+
+    Returns:
+        Tuple of (noisy_vx, noisy_vy)
+    """
+    k1, k2 = jax.random.split(key)
+
+    noise_x = jax.random.normal(k1, velocity_x.shape) * noise_scale
+    noise_y = jax.random.normal(k2, velocity_y.shape) * noise_scale
+
+    noisy_vx = jnp.clip(velocity_x + noise_x, -1.0, 1.0)
+    noisy_vy = jnp.clip(velocity_y + noise_y, -1.0, 1.0)
+
+    return noisy_vx, noisy_vy
+
+
 def advect_mass_circular(
     mass: jnp.ndarray,
     velocity_x: jnp.ndarray,
