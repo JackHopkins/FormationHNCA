@@ -208,65 +208,97 @@ def random_rotate_formation(
     return rotate_formation(target, angle)
 
 
+# Scale factor to ensure formations fit when rotated 45°
+# diagonal = side * sqrt(2), so we need side = grid / sqrt(2) ≈ 0.707 * grid
+ROTATION_SAFE_SCALE = 1.0 / jnp.sqrt(2.0)  # ~0.707
+
+
 class FormationTargets:
     """Factory for creating formation target patterns."""
 
     @staticmethod
-    def line(height: int, width: int, depth: int = 2) -> jnp.ndarray:
+    def line(height: int, width: int, depth: int = 2, rotation_safe: bool = False) -> jnp.ndarray:
         """Create line formation target.
 
         Args:
             height: Grid height
             width: Grid width
             depth: Number of ranks (default 2)
+            rotation_safe: If True, scale formation so diagonal fits in grid
 
         Returns:
             RGBA target tensor
         """
         target = jnp.zeros((height, width, 4))
         center_row = height // 2
+        center_col = width // 2
+
+        if rotation_safe:
+            # Scale width so diagonal fits: effective_width = width * 0.707
+            margin = int(width * (1 - ROTATION_SAFE_SCALE) / 2)
+            start_col = margin
+            end_col = width - margin
+        else:
+            start_col = 0
+            end_col = width
+
         start_row = center_row - depth // 2
         end_row = start_row + depth
 
-        target = target.at[start_row:end_row, :, 3].set(
+        target = target.at[start_row:end_row, start_col:end_col, 3].set(
             FORMATION_SPECS[FormationTypes.LINE].density
         )
-        target = target.at[start_row:end_row, :, :3].set(1.0)
+        target = target.at[start_row:end_row, start_col:end_col, :3].set(1.0)
 
         return target
 
     @staticmethod
-    def phalanx(height: int, width: int, depth: int = 16) -> jnp.ndarray:
+    def phalanx(height: int, width: int, depth: int = 16, rotation_safe: bool = False) -> jnp.ndarray:
         """Create phalanx formation target.
 
         Args:
             height: Grid height
             width: Grid width
             depth: Number of ranks (default 16)
+            rotation_safe: If True, scale formation so diagonal fits in grid
 
         Returns:
             RGBA target tensor
         """
         target = jnp.zeros((height, width, 4))
-        depth = min(depth, height - 4)
+
+        if rotation_safe:
+            # Scale both dimensions
+            h_margin = int(height * (1 - ROTATION_SAFE_SCALE) / 2)
+            w_margin = int(width * (1 - ROTATION_SAFE_SCALE) / 2)
+            effective_height = height - 2 * h_margin
+            depth = min(depth, effective_height - 4)
+            start_col = w_margin
+            end_col = width - w_margin
+        else:
+            depth = min(depth, height - 4)
+            start_col = 0
+            end_col = width
+
         center_row = height // 2
         start_row = center_row - depth // 2
         end_row = start_row + depth
 
         density = FORMATION_SPECS[FormationTypes.PHALANX].density
-        target = target.at[start_row:end_row, :, 3].set(density)
-        target = target.at[start_row:end_row, :, :3].set(1.0)
+        target = target.at[start_row:end_row, start_col:end_col, 3].set(density)
+        target = target.at[start_row:end_row, start_col:end_col, :3].set(1.0)
 
         return target
 
     @staticmethod
-    def square(height: int, width: int, thickness: int = 4) -> jnp.ndarray:
+    def square(height: int, width: int, thickness: int = 4, rotation_safe: bool = False) -> jnp.ndarray:
         """Create hollow square formation target.
 
         Args:
             height: Grid height
             width: Grid width
             thickness: Wall thickness (default 4)
+            rotation_safe: If True, scale formation so diagonal fits in grid
 
         Returns:
             RGBA target tensor
@@ -274,14 +306,28 @@ class FormationTargets:
         target = jnp.zeros((height, width, 4))
         density = FORMATION_SPECS[FormationTypes.SQUARE].density
 
+        if rotation_safe:
+            # Scale to fit when rotated: margin = (1 - 0.707) / 2 ≈ 0.146
+            h_margin = int(height * (1 - ROTATION_SAFE_SCALE) / 2)
+            w_margin = int(width * (1 - ROTATION_SAFE_SCALE) / 2)
+            top = h_margin
+            bottom = height - h_margin
+            left = w_margin
+            right = width - w_margin
+        else:
+            top = 0
+            bottom = height
+            left = 0
+            right = width
+
         # Top wall
-        target = target.at[:thickness, :, 3].set(density)
+        target = target.at[top:top+thickness, left:right, 3].set(density)
         # Bottom wall
-        target = target.at[-thickness:, :, 3].set(density)
+        target = target.at[bottom-thickness:bottom, left:right, 3].set(density)
         # Left wall
-        target = target.at[:, :thickness, 3].set(density)
+        target = target.at[top:bottom, left:left+thickness, 3].set(density)
         # Right wall
-        target = target.at[:, -thickness:, 3].set(density)
+        target = target.at[top:bottom, right-thickness:right, 3].set(density)
 
         # Set RGB where alpha > 0
         target = target.at[..., :3].set(
@@ -291,12 +337,13 @@ class FormationTargets:
         return target
 
     @staticmethod
-    def wedge(height: int, width: int) -> jnp.ndarray:
+    def wedge(height: int, width: int, rotation_safe: bool = False) -> jnp.ndarray:
         """Create wedge (triangle) formation target.
 
         Args:
             height: Grid height
             width: Grid width
+            rotation_safe: If True, scale formation so diagonal fits in grid
 
         Returns:
             RGBA target tensor
@@ -304,11 +351,26 @@ class FormationTargets:
         target = jnp.zeros((height, width, 4))
         density = FORMATION_SPECS[FormationTypes.WEDGE].density
 
+        if rotation_safe:
+            h_margin = int(height * (1 - ROTATION_SAFE_SCALE) / 2)
+            w_margin = int(width * (1 - ROTATION_SAFE_SCALE) / 2)
+            effective_height = height - 2 * h_margin
+            effective_width = width - 2 * w_margin
+            start_row = h_margin
+        else:
+            h_margin = 0
+            w_margin = 0
+            effective_height = height
+            effective_width = width
+            start_row = 0
+
+        center = width // 2
+
         # Create triangular density gradient
-        for row in range(height):
-            progress = row / height
-            half_width = int((1 - progress) * width / 2)
-            center = width // 2
+        for i in range(effective_height):
+            row = start_row + i
+            progress = i / effective_height
+            half_width = int((1 - progress) * effective_width / 2)
 
             if half_width > 0:
                 row_density = density * (0.5 + 0.5 * progress)
@@ -323,13 +385,14 @@ class FormationTargets:
         return target
 
     @staticmethod
-    def column(height: int, width: int, col_width: int = 4) -> jnp.ndarray:
+    def column(height: int, width: int, col_width: int = 4, rotation_safe: bool = False) -> jnp.ndarray:
         """Create column formation target.
 
         Args:
             height: Grid height
             width: Grid width
             col_width: Column width (default 4)
+            rotation_safe: If True, scale formation so diagonal fits in grid
 
         Returns:
             RGBA target tensor
@@ -339,25 +402,38 @@ class FormationTargets:
         center = width // 2
         half = col_width // 2
 
-        target = target.at[:, center - half:center + half, 3].set(density)
-        target = target.at[:, center - half:center + half, :3].set(1.0)
+        if rotation_safe:
+            h_margin = int(height * (1 - ROTATION_SAFE_SCALE) / 2)
+            start_row = h_margin
+            end_row = height - h_margin
+        else:
+            start_row = 0
+            end_row = height
+
+        target = target.at[start_row:end_row, center - half:center + half, 3].set(density)
+        target = target.at[start_row:end_row, center - half:center + half, :3].set(1.0)
 
         return target
 
     @staticmethod
-    def testudo(height: int, width: int, size: int = 10) -> jnp.ndarray:
+    def testudo(height: int, width: int, size: int = 10, rotation_safe: bool = False) -> jnp.ndarray:
         """Create testudo formation target.
 
         Args:
             height: Grid height
             width: Grid width
             size: Formation size (default 10x10)
+            rotation_safe: If True, scale formation so diagonal fits in grid
 
         Returns:
             RGBA target tensor
         """
         target = jnp.zeros((height, width, 4))
         density = FORMATION_SPECS[FormationTypes.TESTUDO].density
+
+        if rotation_safe:
+            # Reduce size so diagonal fits
+            size = int(size * ROTATION_SAFE_SCALE)
 
         center_y, center_x = height // 2, width // 2
         half = size // 2
@@ -380,7 +456,8 @@ def create_formation_target(
     height: int,
     width: int,
     formation_type: FormationTypes | int | str,
-    rotation: float = 0.0
+    rotation: float = 0.0,
+    rotation_safe: bool = False
 ) -> jnp.ndarray:
     """Create formation target pattern.
 
@@ -389,6 +466,7 @@ def create_formation_target(
         width: Grid width
         formation_type: Formation type (enum, int, or string name)
         rotation: Rotation angle in radians (default 0)
+        rotation_safe: If True, scale formation so diagonal fits when rotated
 
     Returns:
         RGBA target tensor
@@ -402,17 +480,17 @@ def create_formation_target(
     targets = FormationTargets()
 
     if formation_type == FormationTypes.LINE:
-        target = targets.line(height, width)
+        target = targets.line(height, width, rotation_safe=rotation_safe)
     elif formation_type == FormationTypes.PHALANX:
-        target = targets.phalanx(height, width)
+        target = targets.phalanx(height, width, rotation_safe=rotation_safe)
     elif formation_type == FormationTypes.SQUARE:
-        target = targets.square(height, width)
+        target = targets.square(height, width, rotation_safe=rotation_safe)
     elif formation_type == FormationTypes.WEDGE:
-        target = targets.wedge(height, width)
+        target = targets.wedge(height, width, rotation_safe=rotation_safe)
     elif formation_type == FormationTypes.COLUMN:
-        target = targets.column(height, width)
+        target = targets.column(height, width, rotation_safe=rotation_safe)
     elif formation_type == FormationTypes.TESTUDO:
-        target = targets.testudo(height, width)
+        target = targets.testudo(height, width, rotation_safe=rotation_safe)
     else:
         raise ValueError(f"Unknown formation type: {formation_type}")
 
