@@ -77,6 +77,102 @@ def alive_masking(
     return state * alive.astype(jnp.float32)
 
 
+def advect_alpha(
+    alpha: jnp.ndarray,
+    velocity_x: jnp.ndarray,
+    velocity_y: jnp.ndarray,
+    dt: float = 0.5
+) -> jnp.ndarray:
+    """Transport alpha (mass) based on velocity field.
+
+    This is a first-order upwind advection scheme that ensures:
+    - Mass conservation: total alpha is preserved
+    - Stability: uses upwind differencing
+    - Locality: only considers immediate neighbors
+
+    Args:
+        alpha: Mass/density field of shape (H, W) or (B, H, W)
+        velocity_x: Horizontal velocity, positive = rightward
+        velocity_y: Vertical velocity, positive = downward
+        dt: Time step (should be <= 0.5 for stability)
+
+    Returns:
+        Updated alpha field with mass transported according to velocity
+    """
+    # Clamp velocities for CFL stability condition
+    velocity_x = jnp.clip(velocity_x, -1.0, 1.0)
+    velocity_y = jnp.clip(velocity_y, -1.0, 1.0)
+
+    # Compute outflow from each cell based on velocity direction
+    # Positive vx = flow right, negative vx = flow left
+    outflow_right = alpha * jnp.maximum(velocity_x, 0.0)
+    outflow_left = alpha * jnp.maximum(-velocity_x, 0.0)
+    outflow_down = alpha * jnp.maximum(velocity_y, 0.0)
+    outflow_up = alpha * jnp.maximum(-velocity_y, 0.0)
+
+    # Total mass leaving this cell
+    total_outflow = outflow_right + outflow_left + outflow_down + outflow_up
+
+    # Compute inflow from neighbors
+    # Roll brings neighbor values to current position
+    # Left neighbor's rightward flow arrives here
+    inflow_from_left = jnp.roll(outflow_right, 1, axis=-1)
+    # Right neighbor's leftward flow arrives here
+    inflow_from_right = jnp.roll(outflow_left, -1, axis=-1)
+    # Upper neighbor's downward flow arrives here
+    inflow_from_up = jnp.roll(outflow_down, 1, axis=-2)
+    # Lower neighbor's upward flow arrives here
+    inflow_from_down = jnp.roll(outflow_up, -1, axis=-2)
+
+    # Total mass arriving at this cell
+    total_inflow = inflow_from_left + inflow_from_right + inflow_from_up + inflow_from_down
+
+    # Update: subtract outflow, add inflow
+    new_alpha = alpha + dt * (total_inflow - total_outflow)
+
+    # Clamp to valid range (small epsilon to prevent exactly 0 for gradients)
+    return jnp.clip(new_alpha, 0.0, 1.0)
+
+
+def advect_state(
+    state: jnp.ndarray,
+    velocity_x_channel: int = 7,
+    velocity_y_channel: int = 8,
+    alpha_channel: int = 3,
+    dt: float = 0.5,
+    advect_all: bool = False
+) -> jnp.ndarray:
+    """Advect alpha (and optionally all channels) based on velocity channels.
+
+    Args:
+        state: Full state tensor (H, W, C) or (B, H, W, C)
+        velocity_x_channel: Index of x-velocity channel
+        velocity_y_channel: Index of y-velocity channel
+        alpha_channel: Index of alpha channel
+        dt: Time step for advection
+        advect_all: If True, advect all channels; if False, only alpha
+
+    Returns:
+        State with advected alpha (and optionally other channels)
+    """
+    vx = state[..., velocity_x_channel]
+    vy = state[..., velocity_y_channel]
+
+    if advect_all:
+        # Advect all channels (mass-weighted transport)
+        new_channels = []
+        for c in range(state.shape[-1]):
+            channel = state[..., c]
+            advected = advect_alpha(channel, vx, vy, dt)
+            new_channels.append(advected)
+        return jnp.stack(new_channels, axis=-1)
+    else:
+        # Only advect alpha channel
+        alpha = state[..., alpha_channel]
+        new_alpha = advect_alpha(alpha, vx, vy, dt)
+        return state.at[..., alpha_channel].set(new_alpha)
+
+
 def soft_clamp(
     x: jnp.ndarray,
     min_val: float = -3.0,
