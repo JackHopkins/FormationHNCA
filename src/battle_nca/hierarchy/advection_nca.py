@@ -156,6 +156,7 @@ class AdvectionNCA(nn.Module):
     advection_steps: int = 2  # Multiple small steps for stability
     diffusion_rate: float = 0.05  # Spread mass for exploration
     velocity_noise: float = 0.2   # Random velocity perturbation
+    velocity_damping: float = 0.95  # Velocity decay per step (1.0 = no damping)
 
     def setup(self):
         self.perceive = MultiScalePerceive(
@@ -208,6 +209,14 @@ class AdvectionNCA(nn.Module):
         mass = state[..., ADVECTION_CHANNELS.MASS]
         vx = state[..., ADVECTION_CHANNELS.VELOCITY_X]
         vy = state[..., ADVECTION_CHANNELS.VELOCITY_Y]
+
+        # Apply velocity damping (helps cells settle at target)
+        if self.velocity_damping < 1.0:
+            vx = self.velocity_damping * vx
+            vy = self.velocity_damping * vy
+            # Update state with damped velocity
+            state = state.at[..., ADVECTION_CHANNELS.VELOCITY_X].set(vx)
+            state = state.at[..., ADVECTION_CHANNELS.VELOCITY_Y].set(vy)
 
         # Add velocity noise for exploration
         if self.velocity_noise > 0:
